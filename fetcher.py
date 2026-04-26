@@ -155,18 +155,28 @@ def get_all_news() -> dict:
 
 
 # ── Alert Scanner ─────────────────────────────────────────────────
-
 def scan_for_alerts() -> list:
-    """
-    Scan all RSS feeds for catastrophe/danger keywords.
-    Returns list of matched articles.
-    """
     arts = fetch_rss(RSS_FEEDS["all"], max_per_feed=10)
     matched = []
+    
+    # Keywords that MUST appear in the title specifically
+    TITLE_KEYWORDS = [
+        "earthquake", "tsunami", "cyclone", "hurricane", "tornado",
+        "flood", "wildfire", "volcano", "eruption", "landslide",
+        "war declared", "nuclear", "missile strike", "terror attack",
+        "bombing", "explosion", "assassination", "coup", "invasion",
+        "airstrike", "mass shooting", "pandemic", "outbreak",
+        "plane crash", "train crash", "bridge collapse", "dam burst",
+        "india attack", "india flood", "india earthquake",
+        "border clash", "surgical strike", "gunfire", "attack",
+    ]
+
     for a in arts:
-        text = (a["title"] + " " + a["summary"]).lower()
-        hit_keywords = [kw for kw in ALERT_KEYWORDS if kw in text]
-        if hit_keywords:
-            a["matched_keywords"] = hit_keywords
+        # Only check the TITLE, not the summary
+        title_lower = a["title"].lower()
+        hit = [kw for kw in TITLE_KEYWORDS if kw in title_lower]
+        if hit:
+            a["matched_keywords"] = hit
             matched.append(a)
+
     return deduplicate(matched)
