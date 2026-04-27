@@ -187,4 +187,4 @@ def scan_for_alerts(seen_titles: set = None) -> list:
             a["matched_keywords"] = hit
             matched.append(a)
 
-    return deduplicate(matched)
+    return deduplicate(matched) 

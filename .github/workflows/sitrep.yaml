@@ -38,7 +38,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: seen_alerts.json
-          key: seen-alerts-${{ github.run_id }}
+          key: seen-alerts-${{ github.run_number }}
           restore-keys: |
             seen-alerts-
 
@@ -59,4 +59,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: seen_alerts.json
-          key: seen-alerts-${{ github.run_id }}
+          key: seen-alerts-${{ github.run_number }}
