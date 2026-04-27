@@ -1,15 +1,17 @@
 import feedparser
 import requests
 import logging
+import re
 from config import (
     RSS_FEEDS, CDS_KEYWORDS, ALERT_KEYWORDS,
-    CURRENTS_API_KEY, NEWSAPI_KEY
+    CURRENTS_API_KEY, NEWSAPI_KEY,
+    CURRENTS_QUERIES, NEWSAPI_QUERIES,
 )
 
 log = logging.getLogger(__name__)
 
 
-# ── RSS (primary source, unlimited & free) ────────────────────────
+# ── RSS (primary, unlimited & free) ───────────────────────────────
 
 def fetch_rss(feed_urls: list, max_per_feed: int = 6) -> list:
     articles = []
@@ -19,15 +21,14 @@ def fetch_rss(feed_urls: list, max_per_feed: int = 6) -> list:
             for entry in feed.entries[:max_per_feed]:
                 title   = entry.get("title", "").strip()
                 summary = entry.get("summary", entry.get("description", "")).strip()
-                # Strip HTML tags simply
-                import re
                 summary = re.sub(r"<[^>]+>", "", summary)[:400]
-                articles.append({
-                    "title":   title,
-                    "summary": summary,
-                    "link":    entry.get("link", ""),
-                    "source":  feed.feed.get("title", "RSS"),
-                })
+                if title:
+                    articles.append({
+                        "title":   title,
+                        "summary": summary,
+                        "link":    entry.get("link", ""),
+                        "source":  feed.feed.get("title", "RSS"),
+                    })
         except Exception as e:
             log.warning(f"RSS failed [{url}]: {e}")
     return articles
@@ -39,15 +40,17 @@ def fetch_currents(keywords: str, max_results: int = 5) -> list:
     if not CURRENTS_API_KEY:
         return []
     try:
-        url = "https://api.currentsapi.services/v1/search"
-        params = {
-            "keywords": keywords,
-            "language": "en",
-            "apiKey":   CURRENTS_API_KEY,
-            "page_size": max_results,
-        }
-        res  = requests.get(url, params=params, timeout=10)
-        data = res.json()
+        res = requests.get(
+            "https://api.currentsapi.services/v1/search",
+            params={
+                "keywords": keywords,
+                "language": "en",
+                "apiKey":   CURRENTS_API_KEY,
+                "page_size": max_results,
+                "country":  "IN",
+            },
+            timeout=10,
+        )
         return [
             {
                 "title":   a.get("title", ""),
@@ -55,7 +58,7 @@ def fetch_currents(keywords: str, max_results: int = 5) -> list:
                 "link":    a.get("url", ""),
                 "source":  "Currents",
             }
-            for a in data.get("news", [])
+            for a in res.json().get("news", [])
         ]
     except Exception as e:
         log.warning(f"Currents API failed: {e}")
@@ -68,16 +71,17 @@ def fetch_newsapi(query: str, max_results: int = 5) -> list:
     if not NEWSAPI_KEY:
         return []
     try:
-        url = "https://newsapi.org/v2/everything"
-        params = {
-            "q":        query,
-            "language": "en",
-            "sortBy":   "publishedAt",
-            "pageSize": max_results,
-            "apiKey":   NEWSAPI_KEY,
-        }
-        res  = requests.get(url, params=params, timeout=10)
-        data = res.json()
+        res = requests.get(
+            "https://newsapi.org/v2/everything",
+            params={
+                "q":        query,
+                "language": "en",
+                "sortBy":   "publishedAt",
+                "pageSize": max_results,
+                "apiKey":   NEWSAPI_KEY,
+            },
+            timeout=10,
+        )
         return [
             {
                 "title":   a.get("title", ""),
@@ -85,14 +89,15 @@ def fetch_newsapi(query: str, max_results: int = 5) -> list:
                 "link":    a.get("url", ""),
                 "source":  a.get("source", {}).get("name", "NewsAPI"),
             }
-            for a in data.get("articles", [])
+            for a in res.json().get("articles", [])
+            if a.get("title") and "[Removed]" not in a.get("title", "")
         ]
     except Exception as e:
         log.warning(f"NewsAPI failed: {e}")
         return []
 
 
-# ── Deduplication & Scoring ───────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────
 
 def deduplicate(articles: list) -> list:
     seen, unique = set(), []
@@ -110,38 +115,44 @@ def score(article: dict, keywords: list) -> int:
 
 
 def format_for_prompt(articles: list) -> str:
-    lines = []
-    for i, a in enumerate(articles, 1):
-        lines.append(f"{i}. [{a['source']}] {a['title']}. {a['summary']}")
-    return "\n".join(lines) if lines else "No articles fetched."
+    if not articles:
+        return "No articles fetched."
+    return "\n".join(
+        f"{i}. [{a['source']}] {a['title']}. {a['summary']}"
+        for i, a in enumerate(articles, 1)
+    )
 
 
 # ── Category Fetchers ─────────────────────────────────────────────
 
 def get_defence_news() -> list:
-    arts = fetch_rss(RSS_FEEDS["defence"], 8)
-    arts += fetch_currents("India defence military army navy air force", 5)
-    arts = deduplicate(arts)
+    arts  = fetch_rss(RSS_FEEDS["defence"], 8)
+    arts += fetch_currents(CURRENTS_QUERIES["defence"], 5)
+    arts += fetch_newsapi(NEWSAPI_QUERIES["defence"], 4)
+    arts  = deduplicate(arts)
     arts.sort(key=lambda a: score(a, CDS_KEYWORDS), reverse=True)
-    return arts[:8]
+    return arts[:10]
 
 
 def get_international_news() -> list:
-    arts = fetch_rss(RSS_FEEDS["international"], 6)
-    arts += fetch_newsapi("India foreign affairs geopolitics world", 4)
-    return deduplicate(arts)[:8]
+    arts  = fetch_rss(RSS_FEEDS["international"], 6)
+    arts += fetch_currents(CURRENTS_QUERIES["international"], 4)
+    arts += fetch_newsapi(NEWSAPI_QUERIES["international"], 4)
+    return deduplicate(arts)[:10]
 
 
 def get_sports_news() -> list:
-    arts = fetch_rss(RSS_FEEDS["sports"], 6)
-    arts += fetch_currents("India sports cricket hockey badminton", 4)
-    return deduplicate(arts)[:8]
+    arts  = fetch_rss(RSS_FEEDS["sports"], 6)
+    arts += fetch_currents(CURRENTS_QUERIES["sports"], 4)
+    arts += fetch_newsapi(NEWSAPI_QUERIES["sports"], 3)
+    return deduplicate(arts)[:10]
 
 
 def get_tech_news() -> list:
-    arts = fetch_rss(RSS_FEEDS["tech_ai"], 6)
-    arts += fetch_newsapi("artificial intelligence technology India", 4)
-    return deduplicate(arts)[:8]
+    arts  = fetch_rss(RSS_FEEDS["tech_ai"], 6)
+    arts += fetch_currents(CURRENTS_QUERIES["tech_ai"], 4)
+    arts += fetch_newsapi(NEWSAPI_QUERIES["tech_ai"], 3)
+    return deduplicate(arts)[:10]
 
 
 def get_all_news() -> dict:
@@ -154,27 +165,24 @@ def get_all_news() -> dict:
     }
 
 
-# ── Alert Scanner ─────────────────────────────────────────────────
-def scan_for_alerts() -> list:
-    arts = fetch_rss(RSS_FEEDS["all"], max_per_feed=10)
+# ── Alert Scanner (title-only, no duplicates) ─────────────────────
+
+def scan_for_alerts(seen_titles: set = None) -> list:
+    """
+    Scans RSS titles ONLY for unambiguous emergency keywords.
+    Skips titles already in seen_titles to prevent duplicate alerts.
+    """
+    if seen_titles is None:
+        seen_titles = set()
+
+    arts    = fetch_rss(RSS_FEEDS["all"], max_per_feed=15)
     matched = []
-    
-    # Keywords that MUST appear in the title specifically
-    TITLE_KEYWORDS = [
-        "earthquake", "tsunami", "cyclone", "hurricane", "tornado",
-        "flood", "wildfire", "volcano", "eruption", "landslide",
-        "war declared", "nuclear", "missile strike", "terror attack",
-        "bombing", "explosion", "assassination", "coup", "invasion",
-        "airstrike", "mass shooting", "pandemic", "outbreak",
-        "plane crash", "train crash", "bridge collapse", "dam burst",
-        "india attack", "india flood", "india earthquake",
-        "border clash", "surgical strike", "gunfire", "attack",
-    ]
 
     for a in arts:
-        # Only check the TITLE, not the summary
         title_lower = a["title"].lower()
-        hit = [kw for kw in TITLE_KEYWORDS if kw in title_lower]
+        if a["title"] in seen_titles:
+            continue
+        hit = [kw for kw in ALERT_KEYWORDS if kw in title_lower]
         if hit:
             a["matched_keywords"] = hit
             matched.append(a)

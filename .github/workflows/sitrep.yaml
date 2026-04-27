@@ -10,7 +10,7 @@ on:
     - cron: '0  * * * *'    # Every hour   — Alert scan
     - cron: '30 * * * *'    # Every hour+30 — Alert scan
 
-  workflow_dispatch:         # Manual trigger from GitHub UI (for testing)
+  workflow_dispatch:         # Manual trigger from GitHub UI
 
 jobs:
   run-bot:
@@ -34,6 +34,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
+      - name: Restore seen alerts cache
+        uses: actions/cache@v4
+        with:
+          path: seen_alerts.json
+          key: seen-alerts-${{ github.run_id }}
+          restore-keys: |
+            seen-alerts-
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 
@@ -45,3 +53,10 @@ jobs:
           CURRENTS_API_KEY:   ${{ secrets.CURRENTS_API_KEY }}
           NEWSAPI_KEY:        ${{ secrets.NEWSAPI_KEY }}
         run: python run_once.py
+
+      - name: Save seen alerts cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: seen_alerts.json
+          key: seen-alerts-${{ github.run_id }}

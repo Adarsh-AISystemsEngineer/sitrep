@@ -2,18 +2,23 @@
 run_once.py
 -----------
 Called by GitHub Actions. Detects which job to run based on
-the current UTC hour:minute, executes it, sends to Telegram, then exits.
+current UTC time, executes it, sends to Telegram, then exits.
+
+Alert deduplication uses a local file (seen_alerts.txt) which
+is persisted between runs via GitHub Actions cache.
 """
 
 import asyncio
+import json
 import logging
-import sys
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 from telegram import Bot
 from telegram.error import TelegramError
 
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, ALERT_KEYWORDS
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from fetcher import (
     get_all_news,
     get_defence_news,
@@ -36,6 +41,30 @@ logging.basicConfig(
     level=logging.INFO,
 )
 log = logging.getLogger(__name__)
+
+# File to persist seen alert titles across GitHub Actions runs
+SEEN_ALERTS_FILE = Path("seen_alerts.json")
+
+
+# ── Alert deduplication helpers ───────────────────────────────────
+
+def load_seen_alerts() -> set:
+    try:
+        if SEEN_ALERTS_FILE.exists():
+            data = json.loads(SEEN_ALERTS_FILE.read_text())
+            return set(data.get("titles", []))
+    except Exception as e:
+        log.warning(f"Could not load seen alerts: {e}")
+    return set()
+
+
+def save_seen_alerts(seen: set):
+    try:
+        # Keep only last 500 titles to prevent file growing forever
+        titles = list(seen)[-500:]
+        SEEN_ALERTS_FILE.write_text(json.dumps({"titles": titles}))
+    except Exception as e:
+        log.warning(f"Could not save seen alerts: {e}")
 
 
 # ── Sender ────────────────────────────────────────────────────────
@@ -100,18 +129,25 @@ async def run_tech(bot: Bot):
 
 async def run_alert(bot: Bot):
     log.info("Running: Alert Scan")
-    matched = scan_for_alerts()
+    seen    = load_seen_alerts()
+    matched = scan_for_alerts(seen_titles=seen)
+
     if not matched:
-        log.info("No alerts found.")
+        log.info("No new alerts.")
         return
+
+    # Update and save seen titles
+    for a in matched:
+        seen.add(a["title"])
+    save_seen_alerts(seen)
+
     text = format_alert(matched)
     await send(bot, text)
-    log.info(f"Alert sent: {len(matched)} item(s).")
+    log.info(f"Alert sent: {len(matched)} new item(s).")
 
 
 # ── Dispatcher ────────────────────────────────────────────────────
 
-# Maps (hour, minute) UTC → job function
 JOB_MAP = {
     (1,  30): run_morning,
     (7,  30): run_afternoon,
@@ -119,28 +155,20 @@ JOB_MAP = {
     (15, 30): run_tech,
 }
 
-# Alert scan runs on any other trigger (workflow_dispatch or */30 cron)
-ALERT_MINUTES = {0, 30}   # runs at :00 and :30 of every hour
-
 
 async def main():
-    now = datetime.now(timezone.utc)
-    h, m = now.hour, now.minute
-
-    # Normalize minute to nearest 0 or 30 to handle slight timing drift
+    now   = datetime.now(timezone.utc)
+    h, m  = now.hour, now.minute
     m_norm = 0 if m < 30 else 30
 
-    log.info(f"Current UTC: {h:02d}:{m:02d} (normalized minute: {m_norm})")
+    log.info(f"UTC: {h:02d}:{m:02d} → normalized: {h:02d}:{m_norm:02d}")
 
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
-
-    # Check if a named digest job matches this time
+    bot    = Bot(token=TELEGRAM_BOT_TOKEN)
     job_fn = JOB_MAP.get((h, m_norm))
 
     if job_fn:
         await job_fn(bot)
     else:
-        # Any other trigger → run alert scan
         await run_alert(bot)
 
 
