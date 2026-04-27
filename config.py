@@ -87,7 +87,7 @@ ALERT_KEYWORDS = [
     # India specific
     "india floods", "india earthquake", "india cyclone",
     "border clash", "loc violation", "surgical strike",
-    "blast kills", "explosion kills",
+    "blast kills", "explosion kills","india politics","modi","elections","parliament","supreme court","armed forces",
 ]
 
 # ── CDS Relevance Keywords ─────────────────────────────────────────
